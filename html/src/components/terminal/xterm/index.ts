@@ -1,14 +1,16 @@
 import { bind } from 'decko';
-import { IDisposable, ITerminalOptions, Terminal } from 'xterm';
-import { CanvasAddon } from 'xterm-addon-canvas';
-import { WebglAddon } from 'xterm-addon-webgl';
-import { FitAddon } from 'xterm-addon-fit';
-import { WebLinksAddon } from 'xterm-addon-web-links';
-import { ImageAddon } from 'xterm-addon-image';
+import type { IDisposable, ITerminalOptions } from '@xterm/xterm';
+import { Terminal } from '@xterm/xterm';
+import { CanvasAddon } from '@xterm/addon-canvas';
+import { WebglAddon } from '@xterm/addon-webgl';
+import { FitAddon } from '@xterm/addon-fit';
+import { WebLinksAddon } from '@xterm/addon-web-links';
+import { ImageAddon } from '@xterm/addon-image';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { OverlayAddon } from './addons/overlay';
 import { ZmodemAddon } from './addons/zmodem';
 
-import 'xterm/css/xterm.css';
+import '@xterm/xterm/css/xterm.css';
 
 interface TtydTerminal extends Terminal {
     fit(): void;
@@ -20,7 +22,7 @@ declare global {
     }
 }
 
-const enum Command {
+enum Command {
     // server side
     OUTPUT = '0',
     SET_WINDOW_TITLE = '1',
@@ -46,6 +48,7 @@ export interface ClientOptions {
     titleFixed?: string;
     isWindows: boolean;
     trzszDragInitTimeout: number;
+    unicodeVersion: string;
 }
 
 export interface FlowControl {
@@ -295,6 +298,40 @@ export class Xterm {
     }
 
     @bind
+    private parseOptsFromUrlQuery(query: string): Preferences {
+        const { terminal } = this;
+        const { clientOptions } = this.options;
+        const prefs = {} as Preferences;
+        const queryObj = Array.from(new URLSearchParams(query) as unknown as Iterable<[string, string]>);
+
+        for (const [k, queryVal] of queryObj) {
+            let v = clientOptions[k];
+            if (v === undefined) v = terminal.options[k];
+            switch (typeof v) {
+                case 'boolean':
+                    prefs[k] = queryVal === 'true' || queryVal === '1';
+                    break;
+                case 'number':
+                case 'bigint':
+                    prefs[k] = Number.parseInt(queryVal, 10);
+                    break;
+                case 'string':
+                    prefs[k] = queryVal;
+                    break;
+                case 'object':
+                    prefs[k] = JSON.parse(queryVal);
+                    break;
+                default:
+                    console.warn(`[ttyd] maybe unknown option: ${k}=${queryVal}, treating as string`);
+                    prefs[k] = queryVal;
+                    break;
+            }
+        }
+
+        return prefs;
+    }
+
+    @bind
     private onSocketData(event: MessageEvent) {
         const { textDecoder } = this;
         const rawData = event.data as ArrayBuffer;
@@ -313,6 +350,7 @@ export class Xterm {
                 this.applyPreferences({
                     ...this.options.clientOptions,
                     ...JSON.parse(textDecoder.decode(data)),
+                    ...this.parseOptsFromUrlQuery(window.location.search),
                 } as Preferences);
                 break;
             default:
@@ -337,8 +375,8 @@ export class Xterm {
             this.writeFunc = data => this.zmodemAddon?.consume(data);
             terminal.loadAddon(register(this.zmodemAddon));
         }
-        Object.keys(prefs).forEach(key => {
-            const value = prefs[key];
+
+        for (const [key, value] of Object.entries(prefs)) {
             switch (key) {
                 case 'rendererType':
                     this.setRendererType(value);
@@ -386,6 +424,21 @@ export class Xterm {
                 case 'isWindows':
                     if (value) console.log('[ttyd] is windows');
                     break;
+                case 'unicodeVersion':
+                    switch (value) {
+                        case 6:
+                        case '6':
+                            console.log('[ttyd] setting Unicode version: 6');
+                            break;
+                        case 11:
+                        case '11':
+                        default:
+                            console.log('[ttyd] setting Unicode version: 11');
+                            terminal.loadAddon(new Unicode11Addon());
+                            terminal.unicode.activeVersion = '11';
+                            break;
+                    }
+                    break;
                 default:
                     console.log(`[ttyd] option: ${key}=${JSON.stringify(value)}`);
                     if (terminal.options[key] instanceof Object) {
@@ -396,7 +449,7 @@ export class Xterm {
                     if (key.indexOf('font') === 0) fitAddon.fit();
                     break;
             }
-        });
+        }
     }
 
     @bind
